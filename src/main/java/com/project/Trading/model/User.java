@@ -1,10 +1,8 @@
 package com.project.Trading.model;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
+import com.project.Trading.domain.UserRole;
+import jakarta.persistence.*;
 import lombok.Data;
 
 @Entity
@@ -12,13 +10,21 @@ import lombok.Data;
 public class User {
     @Id
     @GeneratedValue(strategy = GenerationType.AUTO)
-    private long id;
-    private String username;
+    private Long id;
+
+    private String fullName;
     private String email;
 
-    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    //when we fetch user from client side password should be ignored
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) //password is only writable
+
     private String password;
-    private String firstName;
-    private String lastName;
+
+    @Embedded
+    private TwoFactorAuth twoFactorAuth=new TwoFactorAuth();
+
+
+    private UserRole role= UserRole.USER ;//default =customer
+
 
 }

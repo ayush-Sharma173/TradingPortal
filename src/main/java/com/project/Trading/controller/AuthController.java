@@ -1,56 +1,192 @@
 package com.project.Trading.controller;
 
 import com.project.Trading.config.JwtProvider;
+import com.project.Trading.exception.UserException;
+import com.project.Trading.model.TwoFactorOTP;
 import com.project.Trading.model.User;
 import com.project.Trading.repository.UserRepository;
+import com.project.Trading.request.LoginRequest;
 import com.project.Trading.response.AuthResponse;
-import com.project.Trading.service.CustomUserDetailsService;
+import com.project.Trading.service.*;
+import com.project.Trading.utils.OtpUtils;
+import jakarta.mail.MessagingException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.IOException;
 
+
+/**
+ * The AuthController class provides RESTful web services for user authentication
+ * and registration.
+ *
+ * It defines endpoints for user signup to create a new user account. The signup
+ * process ensures that the email is unique before creating a new user.
+ *
+ * The class uses the UserRepository to interact with the database and CustomUserDetailsService
+ * for user-related operations.
+ */
 @RestController
 @RequestMapping("/auth")
 public class AuthController {
+
     @Autowired
     private UserRepository userRepository;
+
     @Autowired
-    private CustomUserDetailsService customUserDetailsService;
+    private CustomUserDetailsService customUserDetails;
+
+    @Autowired
+    private UserService userService;
+
+    @Autowired
+    private WatchlistService watchlistService;
+
+    @Autowired
+    private WalletService walletService;
+
+    @Autowired
+    private VerificationService verificationService;
+
+    @Autowired
+    private TwoFactorOtpService twoFactorOtpService;
+
+    @Autowired
+    private EmailService emailService;
+
+
 
     @PostMapping("/signup")
-    public ResponseEntity<AuthResponse> register(@RequestBody User user) throws Exception {
-        User isEmailexist = userRepository.findByEmail(user.getEmail());
-        if (isEmailexist != null){
-            throw new Exception("Email is already registered") ;
+    public ResponseEntity<AuthResponse> createUserHandler(
+            @RequestBody User user) throws UserException {
+
+        String email = user.getEmail();
+        String password = user.getPassword();
+        String fullName = user.getFullName();
+        String mobile=user.getMobile();
+
+
+        User isEmailExist = userRepository.findByEmail(email);
+
+        if (isEmailExist!=null) {
+
+            throw new UserException("Email Is Already Used With Another Account");
         }
-        User newUser =new User();
 
-        newUser.setEmail(user.getEmail());
-        newUser.setPassword(user.getPassword());
-        newUser.setFullName(user.getFullName());
+        // Create new user
+        User createdUser = new User();
+        createdUser.setEmail(email);
+        createdUser.setFullName(fullName);
+        createdUser.setMobile(mobile);
+        createdUser.setPassword(password);
 
-        User savedUser = userRepository.save(newUser);
+        User savedUser = userRepository.save(createdUser);
 
-        Authentication authentication =new UsernamePasswordAuthenticationToken(
-                user.getEmail(),
-                user.getPassword()
+        watchlistService.createWatchList(savedUser);
+//		walletService.createWallet(user);
 
-        );
 
+        Authentication authentication = new UsernamePasswordAuthenticationToken(email, password);
         SecurityContextHolder.getContext().setAuthentication(authentication);
-        String jwt = JwtProvider.generatetoken(authentication);
 
-        AuthResponse res=new AuthResponse() ;
-        res.setJwt(jwt);
-        res.setStatus(true);
-        res.setMessage("Register is successful") ;
+        String token = JwtProvider.generateToken(authentication);
 
-        return new ResponseEntity<>(res, HttpStatus.CREATED) ;
+        AuthResponse authResponse = new AuthResponse();
+        authResponse.setJwt(token);
+        authResponse.setMessage("Register Success");
+
+        return new ResponseEntity<AuthResponse>(authResponse, HttpStatus.OK);
+
     }
 
+    @PostMapping("/signin")
+    public ResponseEntity<AuthResponse> signing(@RequestBody LoginRequest loginRequest) throws UserException, MessagingException {
+
+        String username = loginRequest.getEmail();
+        String password = loginRequest.getPassword();
+
+        System.out.println(username + " ----- " + password);
+
+        Authentication authentication = authenticate(username, password);
+
+        User user=userService.findUserByEmail(username);
+
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
+        String token = JwtProvider.generateToken(authentication);
+
+        if(user.getTwoFactorAuth().isEnabled()){
+            AuthResponse authResponse = new AuthResponse();
+            authResponse.setMessage("Two factor authentication enabled");
+            authResponse.setTwoFactorAuthEnabled(true);
+
+            String otp= OtpUtils.generateOTP();
+
+            TwoFactorOTP oldTwoFactorOTP=twoFactorOtpService.findByUser(user.getId());
+            if(oldTwoFactorOTP!=null){
+                twoFactorOtpService.deleteTwoFactorOtp(oldTwoFactorOTP);
+            }
+
+
+            TwoFactorOTP twoFactorOTP=twoFactorOtpService.createTwoFactorOtp(user,otp,token);
+
+            emailService.sendVerificationOtpEmail(user.getEmail(),otp);
+
+            authResponse.setSession(twoFactorOTP.getId());
+            return new ResponseEntity<>(authResponse, HttpStatus.OK);
+        }
+
+        AuthResponse authResponse = new AuthResponse();
+
+        authResponse.setMessage("Login Success");
+        authResponse.setJwt(token);
+
+        return new ResponseEntity<>(authResponse, HttpStatus.OK);
+    }
+
+    private Authentication authenticate(String username, String password) {
+        UserDetails userDetails = customUserDetails.loadUserByUsername(username);
+
+        System.out.println("sign in userDetails - " + userDetails);
+
+        if (userDetails == null) {
+            System.out.println("sign in userDetails - null " + userDetails);
+            throw new BadCredentialsException("Invalid username or password");
+        }
+        if (password==userDetails.getPassword()) {
+            System.out.println("sign in userDetails - password not match " + userDetails);
+            throw new BadCredentialsException("Invalid username or password");
+        }
+        return new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+    }
+
+
+    @PostMapping("/two-factor/otp/{otp}")
+    public ResponseEntity<AuthResponse> verifySigningOtp(
+            @PathVariable String otp,
+            @RequestParam String id
+    ) throws Exception {
+
+
+        TwoFactorOTP twoFactorOTP = twoFactorOtpService.findById(id);
+
+        if(twoFactorOtpService.verifyTwoFactorOtp(twoFactorOTP,otp)){
+            AuthResponse authResponse = new AuthResponse();
+            authResponse.setMessage("Two factor authentication verified");
+            authResponse.setTwoFactorAuthEnabled(true);
+            authResponse.setJwt(twoFactorOTP.getJwt());
+            return new ResponseEntity<>(authResponse, HttpStatus.OK);
+        }
+        throw new Exception("invalid otp");
+    }
 }

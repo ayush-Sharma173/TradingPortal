@@ -14,11 +14,15 @@ public class User {
 
     private String fullName;
     private String email;
-
+    private String mobile;
     //when we fetch user from client side password should be ignored
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY) //password is only writable
 
     private String password;
+
+//    private UserStatus status= UserStatus.PENDING;
+
+    private boolean isVerified = false;
 
     @Embedded
     private TwoFactorAuth twoFactorAuth=new TwoFactorAuth();
